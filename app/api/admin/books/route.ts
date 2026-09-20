@@ -32,8 +32,8 @@ const editBookSchema = z.object({
   free: z.boolean().optional(),
   featured: z.boolean().optional(),
   content: z.string().max(10000).optional(),
-  coverKey: z.string().regex(/^admin\/).max(500).optional(),
-  pdfKey: z.string().regex(/^admin\/).max(500).optional(),
+  coverKey: z.string().regex(/^admin\//).max(500),
+pdfKey: z.string().regex(/^admin\//).max(500).optional(),
   fileName: z.string().max(255).optional(),
   fileSize: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
 });
