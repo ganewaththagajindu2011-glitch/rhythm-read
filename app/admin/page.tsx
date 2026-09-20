@@ -122,7 +122,7 @@ export default function AdminPage() {
   }
 
   async function deleteBook(slug: string, title: string) {
-    if (!window.confirm(`Delete \"${title}\" permanently? This also removes its stored cover and PDF.`)) return;
+    if (!window.confirm(`Delete "${title}" permanently? This also removes its stored cover and PDF.`)) return;
     setError(''); setStatus('Deleting book…');
     try {
       const response = await fetch('/api/admin/books', { method: 'DELETE', headers: { 'Content-Type':'application/json' }, body: JSON.stringify({ slug }) });
@@ -167,7 +167,7 @@ export default function AdminPage() {
           featured: form.featured,
           content: form.content.trim(),
           ...(coverKey ? { coverKey } : {}),
-          ...(pdfKey ? { pdfKey, fileName: pdf.name, fileSize: pdf.size } : {}),
+          ...(pdfKey ? { pdfKey, fileName: pdf?.name, fileSize: pdf?.size } : {}),
         }),
       });
       setStatus('Book updated successfully.');
