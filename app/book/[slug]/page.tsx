@@ -1,0 +1,16 @@
+export const dynamic = 'force-dynamic';
+
+import Link from 'next/link';
+import { notFound } from 'next/navigation';
+import { ArrowRight, Star } from 'lucide-react';
+import { findBook } from '@/lib/catalog';
+import { BookAnalytics } from '@/app/components/book-analytics';
+
+export async function generateMetadata({params}:{params:Promise<{slug:string}>}){ const {slug}=await params; const book=await findBook(slug); if(!book) return { title:'Book not found' }; return { title: book.title, description: book.description, alternates:{canonical:`/book/${book.slug}`}, openGraph:{title:book.title,description:book.description,type:'book',images:[book.cover]} }; }
+
+export default async function BookPage({params}:{params:Promise<{slug:string}>}){
+  const {slug}=await params;
+  const book=await findBook(slug);
+  if(!book) notFound();
+  return <main><BookAnalytics slug={book.slug}/><script type="application/ld+json" dangerouslySetInnerHTML={{__html:JSON.stringify({'@context':'https://schema.org','@type':'Book','name':book.title,'author':{'@type':'Person','name':book.author},'description':book.description,'image':book.cover,'url':`${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/book/${book.slug}`,'offers':{'@type':'Offer','price':book.free ? 0 : book.price,'priceCurrency':'USD','availability':'https://schema.org/InStock'}})}}/><section style={{paddingTop:150}}><div className="container" style={{display:'grid',gridTemplateColumns:'minmax(260px,360px) 1fr',gap:60,alignItems:'center'}}><div className="cover" style={{borderRadius:22,boxShadow:'0 30px 80px rgba(0,0,0,.18)'}}><img src={book.cover} alt={book.title}/></div><div><span className="pill">{book.category}</span><h1 style={{fontFamily:'Georgia,serif',fontSize:'clamp(52px,7vw,90px)',fontWeight:500,letterSpacing:'-.06em',lineHeight:.95,margin:'18px 0'}}>{book.title}</h1><p style={{fontSize:18,color:'#6b6b70',lineHeight:1.7,maxWidth:650}}>{book.description}</p><div style={{display:'flex',gap:15,alignItems:'center',margin:'20px 0',fontSize:14}}><b>By {book.author}</b><span>·</span><span style={{display:'inline-flex',gap:4,alignItems:'center'}}><Star size={14} fill="currentColor"/> 4.8</span></div><div style={{display:'flex',gap:10,flexWrap:'wrap'}}><Link className="btn btn-dark" href={book.free ? `/read/${book.slug}` : `/checkout/${book.slug}`}>{book.free ? 'Read free' : `Buy & read · $${book.price.toFixed(2)}`}</Link><Link className="btn" href="/login">Add to library</Link></div><p style={{fontSize:12,color:'#888',marginTop:20}}>Paid editions are added to your personal library after verified payment. Free titles are read online.</p></div></div></section><section><div className="container split"><div><div className="eyebrow">About this book</div><h2 style={{fontFamily:'Georgia,serif',fontSize:44,fontWeight:500}}>A reading experience, not a file cabinet.</h2></div><div><p style={{lineHeight:1.8,color:'#666'}}>Original PDFs stay in private storage. The reader exposes only a controlled route, which we can later gate with verified purchases and short-lived access after the payment gateway is connected.</p><Link className="btn" href="/discover">More books <ArrowRight size={14}/></Link></div></div></section></main>
+}

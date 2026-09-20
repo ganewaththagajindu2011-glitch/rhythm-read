@@ -1,0 +1,11 @@
+# Production security checklist
+- Private object storage for original books.
+- Server-side premium ownership checks on every reader request.
+- Short-lived signed reader access.
+- PayHere `md5sig` verification before success.
+- HTTPS, secure HttpOnly SameSite cookies.
+- Strong `AUTH_SECRET`; no secrets in source control.
+- Admin 2FA, rate limiting, input validation and upload scanning.
+- Database backups and restore tests.
+- Audit logs for admin mutations and refunds.
+- Current framework/dependency security patches.
