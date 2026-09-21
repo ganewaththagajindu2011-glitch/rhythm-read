@@ -4,6 +4,7 @@ import { Nav } from './components/nav';
 import { Providers } from './providers';
 import Script from 'next/script';
 import { SITE } from '@/lib/site-config';
+import { Analytics } from '@vercel/analytics/next';
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000';
 
@@ -56,6 +57,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
           <Nav />
           {children}
         </Providers>
+        <Analytics />
       </body>
     </html>
   );
