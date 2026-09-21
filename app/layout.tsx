@@ -7,7 +7,9 @@ import { SITE } from '@/lib/site-config';
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000';
 
-export const metadata: Metadata = {
+export const metadata: Metadata = {verification: {
+  google: 'I4Cb3P52O02uc7fDB3SfUrKpUI0tLYRuNaVZngk3DWU',
+},
   metadataBase: new URL(siteUrl),
   title: {
     default: 'Rhythm Read — The Rhythm of Digital Reading',
