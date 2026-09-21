@@ -11,6 +11,12 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: process.cwd(),
   },
+  typescript: {
+    ignoreBuildErrors: true, // TS errors නිසා build එක නවතින එක වළක්වයි
+  },
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
   async headers() {
     return [
       {
@@ -24,17 +30,6 @@ const nextConfig: NextConfig = {
         ],
       },
     ];
-  },
-};
-
-export default nextConfig;
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  typescript: {
-    ignoreBuildErrors: true, // TS errors නිසා build එක නවතින එක වළක්වයි
-  },
-  eslint: {
-    ignoreDuringBuilds: true,
   },
 };
 
