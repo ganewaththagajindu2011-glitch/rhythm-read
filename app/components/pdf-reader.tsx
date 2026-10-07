@@ -30,7 +30,6 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
         const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
         task = pdfjs.getDocument({
           url: src,
-          disableWorker: true,
           isEvalSupported: false,
           enableXfa: false,
           stopAtErrors: false,
@@ -39,7 +38,7 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
           rangeChunkSize: 128 * 1024,
           useWorkerFetch: false,
           useWasm: false,
-        });
+        } as any);
 
         const loaded = await task.promise;
         if (!cancelled) {

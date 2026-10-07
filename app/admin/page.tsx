@@ -167,7 +167,7 @@ export default function AdminPage() {
           featured: form.featured,
           content: form.content.trim(),
           ...(coverKey ? { coverKey } : {}),
-          ...(pdfKey ? { pdfKey, fileName: pdf.name, fileSize: pdf.size } : {}),
+          ...(pdfKey && pdf ? { pdfKey, fileName: pdf.name, fileSize: pdf.size } : {}),
         }),
       });
       setStatus('Book updated successfully.');

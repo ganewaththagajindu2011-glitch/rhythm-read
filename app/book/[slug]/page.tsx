@@ -100,8 +100,8 @@ export default async function BookPage({ params }: { params: Promise<{ slug: str
             <p className="book-detail-description">{book.description}</p>
             <div className="book-byline"><b>By {book.author}</b><span>·</span><span className="rating"><Star size={14} fill="currentColor" /> Reader community</span></div>
             <div className="book-detail-actions">
-              <Link className="btn btn-dark" href={readHref}>{readLabel}</Link>
-              <Link className="btn" href={libraryHref}>My Library</Link>
+            <Link className="btn btn-dark" href={readHref as any}>{readLabel}</Link>
+            <Link className="btn" href={libraryHref as any}>My Library</Link>
             </div>
             <p className="book-detail-note">A Google sign-in is required before opening any book. Free books remain free to read after sign-in; paid books also require a verified purchase.</p>
           </div>

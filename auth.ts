@@ -31,7 +31,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
       // Google accounts expose a verified email; only verified identities are
       // accepted into the application account system.
-      if (user.emailVerified === false) return false;
+      if ((user as any).emailVerified === false) return false;
 
       try {
         await upsertUser({
