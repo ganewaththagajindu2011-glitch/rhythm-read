@@ -1,0 +1,2 @@
+# Add the exact seller line supplied by Google AdSense after your site is approved.
+# Example format: google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0
