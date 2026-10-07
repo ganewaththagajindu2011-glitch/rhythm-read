@@ -840,3 +840,48 @@ input:focus,textarea:focus,select:focus{outline:none;box-shadow:0 0 0 4px rgba(9
   .btn:hover:not(:disabled),.book-card:hover,.category-directory-card:hover{transform:none}
   .book-card:active,.category-directory-card:active,.btn:active{transform:scale(.99)}
 }
+
+/* ================================================================
+   MOBILE PERFORMANCE PATCH — visual design stays intact
+   ================================================================ */
+   @media (max-width: 760px){
+    body{
+      background-attachment:scroll;
+    }
+  
+    .glass{
+      backdrop-filter:blur(18px) saturate(150%) contrast(105%);
+      -webkit-backdrop-filter:blur(18px) saturate(150%) contrast(105%);
+      transform-style:flat;
+    }
+  
+    .btn,.pill,.reader-tool,.reaction-btn,.nav-profile{
+      backdrop-filter:blur(12px) saturate(135%);
+      -webkit-backdrop-filter:blur(12px) saturate(135%);
+    }
+  
+    body::after{
+      animation:none;
+      filter:blur(34px);
+    }
+  
+    .book-inner-spread{
+      filter:drop-shadow(0 12px 30px rgba(0,0,0,.10));
+    }
+  
+    .book-glow{
+      filter:blur(7px);
+    }
+  
+    .pdf-reader-shell,
+    .pdf-reader-toolbar,
+    .pdf-reader-page-wrap,
+    .reader-native-wrap{
+      min-width:0;
+    }
+  
+    .reader-native-frame{
+      width:100%;
+      max-width:100%;
+    }
+  }
