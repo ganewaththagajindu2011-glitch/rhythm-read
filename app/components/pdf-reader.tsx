@@ -231,7 +231,7 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
         canvas.style.width = `${viewport.width}px`;
         canvas.style.height = `${viewport.height}px`;
         canvas.style.display = 'block';
-        canvas.style.maxWidth = '100%';
+        canvas.style.maxWidth = 'none';
         canvas.style.height = 'auto';
 
         // DPR scaling
@@ -413,7 +413,7 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
             type="button"
             onClick={() =>
               setScale((s) =>
-                Math.min(1.4, Number((s + 0.1).toFixed(2)))
+                Math.min(2.5, Number((s + 0.1).toFixed(2)))
               )
             }
             disabled={loading}
@@ -468,7 +468,7 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
             className="pdf-reader-canvas"
             style={{
               display: loading ? 'none' : 'block',
-              maxWidth: '100%',
+              maxWidth: 'none',
               height: 'auto',
             }}
             aria-label={`Page ${page} of ${title}`}
