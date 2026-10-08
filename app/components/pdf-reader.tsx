@@ -21,7 +21,6 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
   const renderedScaleRef = useRef<Map<number, number>>(new Map());
   const visiblePagesRef = useRef<Set<number>>(new Set([1]));
   const tapStartRef = useRef<{ x: number; y: number } | null>(null);
-  const fullscreenListenerRef = useRef<(() => void) | null>(null);
 
   const [pdf, setPdf] = useState<any>(null);
   const [pages, setPages] = useState(0);
@@ -40,6 +39,7 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
 
   const cancelRender = useCallback((pageNumber: number) => {
     const entry = renderTasksRef.current.get(pageNumber);
+
     if (entry?.task) {
       try {
         entry.task.cancel?.();
@@ -47,6 +47,7 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
         /* noop */
       }
     }
+
     renderTasksRef.current.delete(pageNumber);
     renderTokensRef.current.set(
       pageNumber,
@@ -55,9 +56,8 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
   }, []);
 
   const cancelAllRenders = useCallback(() => {
-    for (const pageNumber of renderTasksRef.current.keys()) {
-      cancelRender(pageNumber);
-    }
+    const pageNumbers = Array.from(renderTasksRef.current.keys());
+    for (const pageNumber of pageNumbers) cancelRender(pageNumber);
     renderTasksRef.current.clear();
   }, [cancelRender]);
 
@@ -81,10 +81,15 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
   const getPageViewport = useCallback(
     async (pdfPageObj: any) => {
       const base = pdfPageObj.getViewport({ scale: 1 });
-      const width =
+      const rawWidth =
         containerWidth || scrollRef.current?.clientWidth || 320;
-      const available = Math.max(180, width - 24);
-      const fitScale = available / base.width;
+
+      // Account for reader padding + possible scrollbar. Keep every page inside
+      // the phone viewport at 100% zoom and only allow horizontal overflow when
+      // the user deliberately zooms in.
+      const available = Math.max(180, rawWidth - 30);
+      const fitScale = available / Math.max(1, base.width);
+
       return pdfPageObj.getViewport({
         scale: Math.max(0.5, fitScale * scale),
       });
@@ -101,11 +106,14 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
       if (!canvas || !pageWrap) return;
 
       const existingScale = renderedScaleRef.current.get(pageNumber);
-      if (existingScale === scale) return;
+      if (existingScale === scale && canvas.width > 1 && canvas.height > 1) {
+        return;
+      }
 
       cancelRender(pageNumber);
       const token = (renderTokensRef.current.get(pageNumber) || 0) + 1;
       renderTokensRef.current.set(pageNumber, token);
+      setRendering(true);
 
       try {
         const pdfPageObj = await pdf.getPage(pageNumber);
@@ -130,12 +138,11 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
           protection.maxDpr,
         );
 
-        const requestedPixels =
-          viewport.width * viewport.height * dpr * dpr;
+        const requestedPixels = viewport.width * viewport.height * dpr * dpr;
 
         if (requestedPixels > protection.maxPixels) {
           const safeDpr = Math.sqrt(
-            protection.maxPixels / (viewport.width * viewport.height),
+            protection.maxPixels / Math.max(1, viewport.width * viewport.height),
           );
           dpr = Math.min(dpr, Math.max(0.65, safeDpr));
         }
@@ -153,6 +160,7 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
 
         pageWrap.style.width = `${viewport.width}px`;
         pageWrap.style.height = `${viewport.height}px`;
+        pageWrap.style.minHeight = `${viewport.height}px`;
         pageWrap.dataset.rendered = 'true';
 
         const context = canvas.getContext('2d', {
@@ -176,13 +184,18 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
         renderTasksRef.current.set(pageNumber, { task: renderTask, token });
         await renderTask.promise;
 
-        if (renderTokensRef.current.get(pageNumber) !== token) return;
+        if (renderTokensRef.current.get(pageNumber) !== token) {
+          pdfPageObj.cleanup?.();
+          return;
+        }
 
         renderedScaleRef.current.set(pageNumber, scale);
+        renderTasksRef.current.delete(pageNumber);
         setRendering(false);
         pdfPageObj.cleanup?.();
-        renderTasksRef.current.delete(pageNumber);
       } catch (e: any) {
+        renderTasksRef.current.delete(pageNumber);
+
         if (
           e?.name !== 'RenderingCancelledException' &&
           e?.name !== 'AbortException'
@@ -190,18 +203,17 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
           console.error(`PDF page ${pageNumber} render failed:`, e);
           setError('මෙම පිටුව පෙන්වීමට නොහැකි විය.');
         }
-        renderTasksRef.current.delete(pageNumber);
       }
     },
     [cancelRender, getCanvasProtection, getPageViewport, pdf, pages, scale],
   );
 
-  // 1. Load PDF
+  // 1. Load PDF with worker fallbacks for mobile / browser differences.
   useEffect(() => {
     let cancelled = false;
     let loadingTask: any = null;
 
-    (async () => {
+    const loadPdf = async () => {
       try {
         setLoading(true);
         setError('');
@@ -209,12 +221,16 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
         setPages(0);
         setCurrentPage(1);
         setPageRatios({});
+        visiblePagesRef.current = new Set([1]);
         renderedScaleRef.current.clear();
         renderTokensRef.current.clear();
         cancelAllRenders();
+        canvasRefs.current.clear();
+        pageRefs.current.clear();
 
         const currentPdf = pdfRef.current;
         pdfRef.current = null;
+
         if (currentPdf) {
           try {
             await currentPdf.destroy?.();
@@ -224,18 +240,71 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
         }
 
         const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-        pdfjs.GlobalWorkerOptions.workerSrc =
-          `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
+        const version = pdfjs.version;
+        const workers = [
+          `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${version}/pdf.worker.min.mjs`,
+          `https://unpkg.com/pdfjs-dist@${version}/build/pdf.worker.min.mjs`,
+        ];
 
-        loadingTask = pdfjs.getDocument({
-          url: src,
-          cMapUrl: `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/cmaps/`,
-          cMapPacked: true,
-          disableAutoFetch: true,
-          disableStream: false,
-        });
+        let loaded: any = null;
+        let lastError: any = null;
 
-        const loaded = await loadingTask.promise;
+        // First try normal worker mode using a couple of public CDN mirrors.
+        for (const workerSrc of workers) {
+          if (cancelled) return;
+
+          try {
+            pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
+
+            loadingTask = pdfjs.getDocument({
+              url: src,
+              cMapUrl: `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${version}/cmaps/`,
+              cMapPacked: true,
+              disableAutoFetch: false,
+              disableStream: false,
+              rangeChunkSize: 65_536,
+            });
+
+            loaded = await loadingTask.promise;
+            break;
+          } catch (workerError) {
+            lastError = workerError;
+
+            try {
+              loadingTask?.destroy?.();
+            } catch {
+              /* noop */
+            }
+
+            loadingTask = null;
+          }
+        }
+
+        // Last-resort fallback for browsers / networks that cannot start the
+        // PDF.js worker. This is slower, but much more compatible.
+        if (!loaded && !cancelled) {
+          try {
+            loadingTask = pdfjs.getDocument({
+              url: src,
+              cMapUrl: `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${version}/cmaps/`,
+              cMapPacked: true,
+              disableAutoFetch: false,
+              disableStream: false,
+              rangeChunkSize: 65_536,
+              isEvalSupported: false,
+              disableWorker: true,
+            } as any);
+
+            loaded = await loadingTask.promise;
+          } catch (fallbackError) {
+            lastError = fallbackError;
+          }
+        }
+
+        if (!loaded) {
+          throw lastError || new Error('PDF could not be loaded.');
+        }
+
         if (cancelled) {
           try {
             await loaded.destroy?.();
@@ -251,6 +320,7 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
         setCurrentPage(1);
       } catch (e: any) {
         console.error('PDF reader failed to load:', e);
+
         if (!cancelled) {
           setError(
             'PDF එක load කර ගැනීමට නොහැකි විය. කරුණාකර link එක පරීක්ෂා කරන්න.',
@@ -259,19 +329,24 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
       } finally {
         if (!cancelled) setLoading(false);
       }
-    })();
+    };
+
+    void loadPdf();
 
     return () => {
       cancelled = true;
+
       try {
         loadingTask?.destroy?.();
       } catch {
         /* noop */
       }
+
       cancelAllRenders();
 
       const currentPdf = pdfRef.current;
       pdfRef.current = null;
+
       if (currentPdf) {
         try {
           currentPdf.destroy?.();
@@ -282,7 +357,7 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
     };
   }, [cancelAllRenders, src]);
 
-  // 2. Observe pages: render only visible / nearby pages for mobile performance.
+  // 2. Observe visible / nearby pages so long PDFs remain performant.
   useEffect(() => {
     if (!pdf || !pages || !scrollRef.current) return;
 
@@ -321,8 +396,8 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
         },
         {
           root,
-          rootMargin: '900px 0px 900px 0px',
-          threshold: [0.1, 0.25, 0.5, 0.75, 1],
+          rootMargin: '1200px 0px 1200px 0px',
+          threshold: [0.05, 0.1, 0.25, 0.5, 0.75, 1],
         },
       );
 
@@ -331,8 +406,13 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
         observer.observe(element);
       }
 
+      visiblePagesRef.current.add(1);
       void renderPage(1);
-      if (pages >= 2) void renderPage(2);
+
+      if (pages >= 2) {
+        visiblePagesRef.current.add(2);
+        void renderPage(2);
+      }
     };
 
     raf = window.requestAnimationFrame(setup);
@@ -343,7 +423,7 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
     };
   }, [currentPage, pages, pdf, renderPage, scale]);
 
-  // 3. Keep reader width current on desktop resize / mobile rotation.
+  // 3. Keep reader width current on resize / rotation.
   useEffect(() => {
     const element = scrollRef.current;
     if (!element) return;
@@ -352,6 +432,7 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
 
     const update = () => {
       if (timeoutId) clearTimeout(timeoutId);
+
       timeoutId = setTimeout(() => {
         const width = Math.floor(element.clientWidth);
         setContainerWidth((current) =>
@@ -361,13 +442,19 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
     };
 
     setContainerWidth(Math.floor(element.clientWidth));
+
     const observer =
       typeof ResizeObserver !== 'undefined' ? new ResizeObserver(update) : null;
+
     observer?.observe(element);
+    window.addEventListener('resize', update, { passive: true });
+    window.addEventListener('orientationchange', update, { passive: true });
 
     return () => {
       if (timeoutId) clearTimeout(timeoutId);
       observer?.disconnect();
+      window.removeEventListener('resize', update);
+      window.removeEventListener('orientationchange', update);
     };
   }, []);
 
@@ -388,11 +475,11 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
     const onFullscreenChange = () => {
       setNativeFullscreen(Boolean(document.fullscreenElement));
     };
-    fullscreenListenerRef.current = onFullscreenChange;
+
     document.addEventListener('fullscreenchange', onFullscreenChange);
+
     return () => {
       document.removeEventListener('fullscreenchange', onFullscreenChange);
-      fullscreenListenerRef.current = null;
     };
   }, []);
 
@@ -419,8 +506,11 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
   };
 
   const scrollByOneViewport = (direction: 1 | -1) => {
-    scrollRef.current?.scrollBy({
-      top: direction * Math.max(240, scrollRef.current.clientHeight * 0.82),
+    const element = scrollRef.current;
+    if (!element) return;
+
+    element.scrollBy({
+      top: direction * Math.max(240, element.clientHeight * 0.82),
       behavior: 'smooth',
     });
   };
@@ -431,7 +521,11 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
       const tag = target?.tagName?.toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
 
-      if (event.key === 'PageDown' || event.key === 'ArrowDown' || event.key === ' ') {
+      if (
+        event.key === 'PageDown' ||
+        event.key === 'ArrowDown' ||
+        event.key === ' '
+      ) {
         event.preventDefault();
         scrollByOneViewport(1);
       } else if (event.key === 'PageUp' || event.key === 'ArrowUp') {
@@ -442,12 +536,14 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
         scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
       } else if (event.key === 'End') {
         event.preventDefault();
-        scrollRef.current?.scrollTo({
-          top: scrollRef.current.scrollHeight,
+        const element = scrollRef.current;
+        element?.scrollTo({
+          top: element.scrollHeight,
           behavior: 'smooth',
         });
       } else if (event.key === 'Escape') {
         setShowControls(true);
+
         if (document.fullscreenElement) {
           void document.exitFullscreen?.();
         } else {
@@ -484,7 +580,7 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
   };
 
   const defaultRatio = pageRatios[1] || 1.414;
-  const availableWidth = Math.max(180, (containerWidth || 320) - 24);
+  const availableWidth = Math.max(180, (containerWidth || 320) - 30);
 
   return (
     <section
@@ -492,7 +588,9 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
       className={`pdf-reader-shell glass${fallbackFullscreen ? ' is-reader-fullscreen-fallback' : ''}`}
       aria-label={`Continuous reader for ${title}`}
     >
-      <div className={`pdf-reader-toolbar${showControls ? ' is-visible' : ' is-hidden'}`}>
+      <div
+        className={`pdf-reader-toolbar${showControls ? ' is-visible' : ' is-hidden'}`}
+      >
         <div className="pdf-reader-controls">
           <span className="reader-page-count">
             Page {currentPage} / {pages || '—'}
@@ -538,12 +636,6 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
           >
             ⛶
           </button>
-
-          <a
-            
-          >
-           
-          </a>
         </div>
       </div>
 
@@ -552,7 +644,7 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
         className={`pdf-reader-page-wrap${isZoomed ? ' is-zoomed' : ''}`}
         onPointerDown={handlePointerDown}
         onPointerUp={handlePointerUp}
-        style={{ touchAction: 'pan-x pan-y' }}
+        style={{ touchAction: isZoomed ? 'pan-x pan-y' : 'pan-y' }}
       >
         {loading && <div className="reader-state">Opening your book…</div>}
 
@@ -573,34 +665,36 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
             </a>
           </div>
         ) : (
-          <div className="pdf-continuous-document">
-            {Array.from({ length: pages }, (_, index) => {
-              const pageNumber = index + 1;
-              const ratio = pageRatios[pageNumber] || defaultRatio;
-              const estimatedWidth = availableWidth * scale;
-              const estimatedHeight = estimatedWidth * ratio;
+          !loading && (
+            <div className="pdf-continuous-document">
+              {Array.from({ length: pages }, (_, index) => {
+                const pageNumber = index + 1;
+                const ratio = pageRatios[pageNumber] || defaultRatio;
+                const estimatedWidth = availableWidth * scale;
+                const estimatedHeight = estimatedWidth * ratio;
 
-              return (
-                <div
-                  key={pageNumber}
-                  ref={(node) => setPageRef(pageNumber, node)}
-                  className="pdf-continuous-page"
-                  data-page={pageNumber}
-                  style={{
-                    width: `${estimatedWidth}px`,
-                    minHeight: `${estimatedHeight}px`,
-                  }}
-                  aria-label={`Page ${pageNumber} of ${title}`}
-                >
-                  <canvas
-                    ref={(node) => setCanvasRef(pageNumber, node)}
-                    className="pdf-continuous-canvas"
-                    aria-hidden="true"
-                  />
-                </div>
-              );
-            })}
-          </div>
+                return (
+                  <div
+                    key={pageNumber}
+                    ref={(node) => setPageRef(pageNumber, node)}
+                    className="pdf-continuous-page"
+                    data-page={pageNumber}
+                    style={{
+                      width: `${estimatedWidth}px`,
+                      minHeight: `${estimatedHeight}px`,
+                    }}
+                    aria-label={`Page ${pageNumber} of ${title}`}
+                  >
+                    <canvas
+                      ref={(node) => setCanvasRef(pageNumber, node)}
+                      className="pdf-continuous-canvas"
+                      aria-hidden="true"
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )
         )}
       </div>
     </section>
