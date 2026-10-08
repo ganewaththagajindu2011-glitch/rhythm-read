@@ -50,7 +50,7 @@ export default async function BookPage({ params }: { params: Promise<{ slug: str
   if (!book) notFound();
 
   const session = await auth();
-  const readLabel = book.free ? 'Sign in & read — free' : `Sign in & read · $${book.price.toFixed(2)}`;
+  const readLabel = book.free ? 'read — free' : `Sign in & read · $${book.price.toFixed(2)}`;
   const readHref = `/read/${book.slug}`;
   const libraryHref = session?.user?.email ? '/library' : `/login?callbackUrl=${encodeURIComponent('/library')}`;
 

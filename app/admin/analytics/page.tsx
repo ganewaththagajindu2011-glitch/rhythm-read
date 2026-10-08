@@ -25,7 +25,7 @@ export default function AdminAnalyticsPage() {
         <div className="stat"><span><Users size={14}/> New users</span><strong>{data.newUsers}</strong></div>
         <div className="stat"><span><DollarSign size={14}/> Paid revenue</span><strong>${Number(data.paidRevenue || 0).toFixed(2)}</strong></div>
       </div>
-      <section className="analytics-panel">
+      <section className="analytics-panel admin-analytics-top-content"></section><section className="analytics-panel">
         <div className="section-head"><div><div className="eyebrow">Top content</div><h2>Books readers spend time with.</h2></div><BarChart3 size={22}/></div>
         <div className="analytics-list">{(data.topBooks || []).map((book:any, i:number) => <div className="analytics-row" key={book.title}><span className="analytics-rank">{String(i+1).padStart(2,'0')}</span><div className="analytics-book"><strong>{book.title}</strong><small>{book.views} views · {Math.round(book.seconds/60)} min reading time</small></div><div className="analytics-bar"><div style={{width:`${Math.min(100, (book.views / Math.max(1, data.topBooks?.[0]?.views || 1))*100)}%`}} /></div></div>)}</div>
       </section>

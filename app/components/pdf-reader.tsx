@@ -1,22 +1,202 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
+
+type PageRatioMap = Record<number, number>;
+
+type RenderTaskEntry = {
+  task: any;
+  token: number;
+};
 
 export function PdfReader({ src, title }: { src: string; title: string }) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const shellRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const pdfRef = useRef<any>(null);
+  const canvasRefs = useRef<Map<number, HTMLCanvasElement>>(new Map());
+  const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const renderTasksRef = useRef<Map<number, RenderTaskEntry>>(new Map());
+  const renderTokensRef = useRef<Map<number, number>>(new Map());
+  const renderedScaleRef = useRef<Map<number, number>>(new Map());
+  const visiblePagesRef = useRef<Set<number>>(new Set([1]));
+  const tapStartRef = useRef<{ x: number; y: number } | null>(null);
+  const fullscreenListenerRef = useRef<(() => void) | null>(null);
 
   const [pdf, setPdf] = useState<any>(null);
-  const [page, setPage] = useState(1);
   const [pages, setPages] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [rendering, setRendering] = useState(false);
   const [error, setError] = useState('');
   const [scale, setScale] = useState(1);
   const [containerWidth, setContainerWidth] = useState(0);
+  const [pageRatios, setPageRatios] = useState<PageRatioMap>({});
+  const [showControls, setShowControls] = useState(true);
+  const [nativeFullscreen, setNativeFullscreen] = useState(false);
+  const [fallbackFullscreen, setFallbackFullscreen] = useState(false);
 
-  // 1. PDF Document Load
+  const isZoomed = scale > 1.01;
+
+  const cancelRender = useCallback((pageNumber: number) => {
+    const entry = renderTasksRef.current.get(pageNumber);
+    if (entry?.task) {
+      try {
+        entry.task.cancel?.();
+      } catch {
+        /* noop */
+      }
+    }
+    renderTasksRef.current.delete(pageNumber);
+    renderTokensRef.current.set(
+      pageNumber,
+      (renderTokensRef.current.get(pageNumber) || 0) + 1,
+    );
+  }, []);
+
+  const cancelAllRenders = useCallback(() => {
+    for (const pageNumber of renderTasksRef.current.keys()) {
+      cancelRender(pageNumber);
+    }
+    renderTasksRef.current.clear();
+  }, [cancelRender]);
+
+  const getCanvasProtection = useCallback(() => {
+    const isMobile =
+      typeof window !== 'undefined' &&
+      (window.matchMedia('(max-width: 760px)').matches ||
+        'ontouchstart' in window);
+
+    const hardwareConcurrency =
+      typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 0 : 0;
+
+    const isLowEnd = hardwareConcurrency > 0 && hardwareConcurrency <= 4;
+
+    return {
+      maxDpr: isMobile ? (isLowEnd ? 1 : 1.25) : 1.5,
+      maxPixels: isMobile ? 8_000_000 : 16_000_000,
+    };
+  }, []);
+
+  const getPageViewport = useCallback(
+    async (pdfPageObj: any) => {
+      const base = pdfPageObj.getViewport({ scale: 1 });
+      const width =
+        containerWidth || scrollRef.current?.clientWidth || 320;
+      const available = Math.max(180, width - 24);
+      const fitScale = available / base.width;
+      return pdfPageObj.getViewport({
+        scale: Math.max(0.5, fitScale * scale),
+      });
+    },
+    [containerWidth, scale],
+  );
+
+  const renderPage = useCallback(
+    async (pageNumber: number) => {
+      if (!pdf || pageNumber < 1 || pageNumber > pages) return;
+
+      const canvas = canvasRefs.current.get(pageNumber);
+      const pageWrap = pageRefs.current.get(pageNumber);
+      if (!canvas || !pageWrap) return;
+
+      const existingScale = renderedScaleRef.current.get(pageNumber);
+      if (existingScale === scale) return;
+
+      cancelRender(pageNumber);
+      const token = (renderTokensRef.current.get(pageNumber) || 0) + 1;
+      renderTokensRef.current.set(pageNumber, token);
+
+      try {
+        const pdfPageObj = await pdf.getPage(pageNumber);
+        const viewport = await getPageViewport(pdfPageObj);
+
+        const ratio = viewport.height / Math.max(1, viewport.width);
+        setPageRatios((current) => {
+          if (Math.abs((current[pageNumber] || 0) - ratio) < 0.0005) {
+            return current;
+          }
+          return { ...current, [pageNumber]: ratio };
+        });
+
+        if (renderTokensRef.current.get(pageNumber) !== token) {
+          pdfPageObj.cleanup?.();
+          return;
+        }
+
+        const protection = getCanvasProtection();
+        let dpr = Math.min(
+          typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1,
+          protection.maxDpr,
+        );
+
+        const requestedPixels =
+          viewport.width * viewport.height * dpr * dpr;
+
+        if (requestedPixels > protection.maxPixels) {
+          const safeDpr = Math.sqrt(
+            protection.maxPixels / (viewport.width * viewport.height),
+          );
+          dpr = Math.min(dpr, Math.max(0.65, safeDpr));
+        }
+
+        const renderWidth = Math.max(1, Math.floor(viewport.width * dpr));
+        const renderHeight = Math.max(1, Math.floor(viewport.height * dpr));
+
+        canvas.width = 1;
+        canvas.height = 1;
+        canvas.width = renderWidth;
+        canvas.height = renderHeight;
+        canvas.style.width = `${viewport.width}px`;
+        canvas.style.height = `${viewport.height}px`;
+        canvas.style.display = 'block';
+
+        pageWrap.style.width = `${viewport.width}px`;
+        pageWrap.style.height = `${viewport.height}px`;
+        pageWrap.dataset.rendered = 'true';
+
+        const context = canvas.getContext('2d', {
+          alpha: false,
+          willReadFrequently: false,
+        });
+
+        if (!context) {
+          throw new Error('Canvas 2D context unavailable');
+        }
+
+        context.setTransform(dpr, 0, 0, dpr, 0, 0);
+        context.fillStyle = '#ffffff';
+        context.fillRect(0, 0, viewport.width, viewport.height);
+
+        const renderTask = pdfPageObj.render({
+          canvasContext: context,
+          viewport,
+        });
+
+        renderTasksRef.current.set(pageNumber, { task: renderTask, token });
+        await renderTask.promise;
+
+        if (renderTokensRef.current.get(pageNumber) !== token) return;
+
+        renderedScaleRef.current.set(pageNumber, scale);
+        setRendering(false);
+        pdfPageObj.cleanup?.();
+        renderTasksRef.current.delete(pageNumber);
+      } catch (e: any) {
+        if (
+          e?.name !== 'RenderingCancelledException' &&
+          e?.name !== 'AbortException'
+        ) {
+          console.error(`PDF page ${pageNumber} render failed:`, e);
+          setError('මෙම පිටුව පෙන්වීමට නොහැකි විය.');
+        }
+        renderTasksRef.current.delete(pageNumber);
+      }
+    },
+    [cancelRender, getCanvasProtection, getPageViewport, pdf, pages, scale],
+  );
+
+  // 1. Load PDF
   useEffect(() => {
     let cancelled = false;
     let loadingTask: any = null;
@@ -27,35 +207,35 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
         setError('');
         setPdf(null);
         setPages(0);
-        setPage(1);
+        setCurrentPage(1);
+        setPageRatios({});
+        renderedScaleRef.current.clear();
+        renderTokensRef.current.clear();
+        cancelAllRenders();
 
-        // කලින් loaded PDF එකක් තියෙනවා නම් memory release කරන්න
-        if (pdfRef.current) {
+        const currentPdf = pdfRef.current;
+        pdfRef.current = null;
+        if (currentPdf) {
           try {
-            await pdfRef.current.destroy?.();
+            await currentPdf.destroy?.();
           } catch {
             /* noop */
           }
-          pdfRef.current = null;
         }
 
         const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-
-        // PDF.js worker
-        pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
+        pdfjs.GlobalWorkerOptions.workerSrc =
+          `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
 
         loadingTask = pdfjs.getDocument({
           url: src,
           cMapUrl: `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/cmaps/`,
           cMapPacked: true,
-
-          // Low-memory devices වල unnecessary preloading නවත්වයි
           disableAutoFetch: true,
           disableStream: false,
         });
 
         const loaded = await loadingTask.promise;
-
         if (cancelled) {
           try {
             await loaded.destroy?.();
@@ -68,34 +248,30 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
         pdfRef.current = loaded;
         setPdf(loaded);
         setPages(loaded.numPages || 0);
-        setPage(1);
+        setCurrentPage(1);
       } catch (e: any) {
         console.error('PDF reader failed to load:', e);
-
         if (!cancelled) {
           setError(
-            'PDF එක load කර ගැනීමට නොහැකි විය. කරුණාකර link එක පරීක්ෂා කරන්න.'
+            'PDF එක load කර ගැනීමට නොහැකි විය. කරුණාකර link එක පරීක්ෂා කරන්න.',
           );
         }
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (!cancelled) setLoading(false);
       }
     })();
 
     return () => {
       cancelled = true;
-
       try {
         loadingTask?.destroy?.();
       } catch {
         /* noop */
       }
+      cancelAllRenders();
 
       const currentPdf = pdfRef.current;
       pdfRef.current = null;
-
       if (currentPdf) {
         try {
           currentPdf.destroy?.();
@@ -104,294 +280,223 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
         }
       }
     };
-  }, [src]);
+  }, [cancelAllRenders, src]);
 
-  // 2. Render Current Page
+  // 2. Observe pages: render only visible / nearby pages for mobile performance.
   useEffect(() => {
-    let cancelled = false;
-    let renderingTask: any = null;
-    let currentPageObj: any = null;
+    if (!pdf || !pages || !scrollRef.current) return;
 
-    (async () => {
-      if (!pdf || !canvasRef.current || !shellRef.current) return;
+    const root = scrollRef.current;
+    let observer: IntersectionObserver | null = null;
+    let raf = 0;
 
-      try {
-        setRendering(true);
-        setError('');
+    const setup = () => {
+      observer = new IntersectionObserver(
+        (entries) => {
+          let bestPage = currentPage;
+          let bestRatio = 0;
 
-        const pdfPage = await pdf.getPage(page);
+          for (const entry of entries) {
+            const pageNumber = Number(
+              (entry.target as HTMLElement).dataset.page || 0,
+            );
+            if (!pageNumber) continue;
 
-        if (cancelled) {
-          try {
-            pdfPage.cleanup?.();
-          } catch {
-            /* noop */
+            if (entry.isIntersecting) {
+              visiblePagesRef.current.add(pageNumber);
+              void renderPage(pageNumber);
+            } else {
+              visiblePagesRef.current.delete(pageNumber);
+            }
+
+            if (entry.intersectionRatio > bestRatio) {
+              bestRatio = entry.intersectionRatio;
+              bestPage = pageNumber;
+            }
           }
-          return;
-        }
 
-        currentPageObj = pdfPage;
-
-        // Base viewport
-        const base = pdfPage.getViewport({ scale: 1 });
-
-        // Phone width එකට fit කරන්න
-        const shellWidth =
-          containerWidth || shellRef.current.clientWidth || 320;
-
-        const available = Math.max(180, shellWidth - 24);
-
-        const fitScale = available / base.width;
-
-        const viewport = pdfPage.getViewport({
-          scale: Math.max(0.5, fitScale * scale),
-        });
-
-        const canvas = canvasRef.current;
-
-        const context = canvas.getContext('2d', {
-          alpha: false,
-          willReadFrequently: false,
-        });
-
-        if (!context || cancelled) return;
-
-        /*
-         * Mobile PDF performance protection
-         *
-         * Normal/high-end phones:
-         *   max DPR = 1.5
-         *
-         * Low-end phones:
-         *   max DPR = 1
-         *
-         * Large PDF pages:
-         *   total canvas pixels are also capped
-         *   so a very large page does not freeze the browser.
-         */
-        const isMobile =
-          typeof window !== 'undefined' &&
-          (window.matchMedia('(max-width: 760px)').matches ||
-            'ontouchstart' in window);
-
-        const hardwareConcurrency =
-          typeof navigator !== 'undefined'
-            ? navigator.hardwareConcurrency || 0
-            : 0;
-
-        const isLowEndDevice =
-          hardwareConcurrency > 0 && hardwareConcurrency <= 4;
-
-        const maxDpr = isMobile
-          ? isLowEndDevice
-            ? 1
-            : 1.25
-          : 1.5;
-
-        let dpr = Math.min(
-          typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1,
-          maxDpr
-        );
-
-        // Canvas pixel protection
-        const maxCanvasPixels = isMobile
-          ? 8_000_000
-          : 16_000_000;
-
-        const requestedWidth = viewport.width * dpr;
-        const requestedHeight = viewport.height * dpr;
-        const requestedPixels = requestedWidth * requestedHeight;
-
-        if (requestedPixels > maxCanvasPixels) {
-          const safeDpr = Math.sqrt(
-            maxCanvasPixels / (viewport.width * viewport.height)
-          );
-
-          dpr = Math.min(dpr, Math.max(0.75, safeDpr));
-        }
-
-        const renderWidth = Math.max(
-          1,
-          Math.floor(viewport.width * dpr)
-        );
-
-        const renderHeight = Math.max(
-          1,
-          Math.floor(viewport.height * dpr)
-        );
-
-        // Old canvas bitmap එක clear කරන්න
-        canvas.width = 1;
-        canvas.height = 1;
-
-        canvas.width = renderWidth;
-        canvas.height = renderHeight;
-
-        // CSS size = actual page size
-        canvas.style.width = `${viewport.width}px`;
-        canvas.style.height = `${viewport.height}px`;
-        canvas.style.display = 'block';
-        canvas.style.maxWidth = 'none';
-        canvas.style.height = 'auto';
-
-        // DPR scaling
-        context.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-        // White background
-        context.fillStyle = '#ffffff';
-        context.fillRect(
-          0,
-          0,
-          viewport.width,
-          viewport.height
-        );
-
-        if (cancelled) return;
-
-        renderingTask = pdfPage.render({
-          canvasContext: context,
-          viewport,
-        });
-
-        await renderingTask.promise;
-      } catch (e: any) {
-        if (
-          !cancelled &&
-          e?.name !== 'RenderingCancelledException' &&
-          e?.name !== 'AbortException'
-        ) {
-          console.error('PDF page render failed:', e);
-          setError('මෙම පිටුව පෙන්වීමට නොහැකි විය.');
-        }
-      } finally {
-        if (!cancelled) {
-          setRendering(false);
-        }
-
-        if (
-          currentPageObj &&
-          typeof currentPageObj.cleanup === 'function'
-        ) {
-          try {
-            currentPageObj.cleanup();
-          } catch {
-            /* noop */
+          if (bestPage !== currentPage && bestRatio > 0.25) {
+            setCurrentPage(bestPage);
           }
-        }
+        },
+        {
+          root,
+          rootMargin: '900px 0px 900px 0px',
+          threshold: [0.1, 0.25, 0.5, 0.75, 1],
+        },
+      );
+
+      for (const [pageNumber, element] of pageRefs.current.entries()) {
+        element.dataset.page = String(pageNumber);
+        observer.observe(element);
       }
-    })();
+
+      void renderPage(1);
+      if (pages >= 2) void renderPage(2);
+    };
+
+    raf = window.requestAnimationFrame(setup);
 
     return () => {
-      cancelled = true;
-
-      try {
-        renderingTask?.cancel?.();
-      } catch {
-        /* noop */
-      }
-
-      if (
-        currentPageObj &&
-        typeof currentPageObj.cleanup === 'function'
-      ) {
-        try {
-          currentPageObj.cleanup();
-        } catch {
-          /* noop */
-        }
-      }
+      window.cancelAnimationFrame(raf);
+      observer?.disconnect();
     };
-  }, [pdf, page, scale, containerWidth]);
+  }, [currentPage, pages, pdf, renderPage, scale]);
 
-  // 3. Resize Observer
+  // 3. Keep reader width current on desktop resize / mobile rotation.
   useEffect(() => {
-    const element = shellRef.current;
+    const element = scrollRef.current;
     if (!element) return;
 
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     const update = () => {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
-
+      if (timeoutId) clearTimeout(timeoutId);
       timeoutId = setTimeout(() => {
-        if (!element) return;
-
         const width = Math.floor(element.clientWidth);
-
-        setContainerWidth((current) => {
-          // Initial value
-          if (!current) {
-            return width;
-          }
-
-          // Tiny width changes ignore කරන්න
-          if (Math.abs(current - width) <= 2) {
-            return current;
-          }
-
-          return width;
-        });
+        setContainerWidth((current) =>
+          !current || Math.abs(current - width) > 2 ? width : current,
+        );
       }, 120);
     };
 
-    // Initial width
     setContainerWidth(Math.floor(element.clientWidth));
-
     const observer =
-      typeof ResizeObserver !== 'undefined'
-        ? new ResizeObserver(update)
-        : null;
-
+      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(update) : null;
     observer?.observe(element);
 
     return () => {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
-
+      if (timeoutId) clearTimeout(timeoutId);
       observer?.disconnect();
     };
   }, []);
 
-  function previous() {
-    setPage((p) => Math.max(1, p - 1));
-  }
+  // 4. Re-render visible pages when zoom changes.
+  useEffect(() => {
+    if (!pdf || !pages) return;
 
-  function next() {
-    setPage((p) => Math.min(pages, p + 1));
-  }
+    renderedScaleRef.current.clear();
+    cancelAllRenders();
+
+    for (const pageNumber of visiblePagesRef.current) {
+      void renderPage(pageNumber);
+    }
+  }, [cancelAllRenders, pages, pdf, renderPage, scale]);
+
+  // 5. Native fullscreen state.
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      setNativeFullscreen(Boolean(document.fullscreenElement));
+    };
+    fullscreenListenerRef.current = onFullscreenChange;
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
+      fullscreenListenerRef.current = null;
+    };
+  }, []);
+
+  const toggleFullscreen = async () => {
+    const element = shellRef.current;
+    if (!element) return;
+
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen?.();
+        setFallbackFullscreen(false);
+        return;
+      }
+
+      if (element.requestFullscreen) {
+        await element.requestFullscreen();
+        setFallbackFullscreen(false);
+      } else {
+        setFallbackFullscreen((value) => !value);
+      }
+    } catch {
+      setFallbackFullscreen((value) => !value);
+    }
+  };
+
+  const scrollByOneViewport = (direction: 1 | -1) => {
+    scrollRef.current?.scrollBy({
+      top: direction * Math.max(240, scrollRef.current.clientHeight * 0.82),
+      behavior: 'smooth',
+    });
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+      if (event.key === 'PageDown' || event.key === 'ArrowDown' || event.key === ' ') {
+        event.preventDefault();
+        scrollByOneViewport(1);
+      } else if (event.key === 'PageUp' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        scrollByOneViewport(-1);
+      } else if (event.key === 'Home') {
+        event.preventDefault();
+        scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+      } else if (event.key === 'End') {
+        event.preventDefault();
+        scrollRef.current?.scrollTo({
+          top: scrollRef.current.scrollHeight,
+          behavior: 'smooth',
+        });
+      } else if (event.key === 'Escape') {
+        setShowControls(true);
+        if (document.fullscreenElement) {
+          void document.exitFullscreen?.();
+        } else {
+          setFallbackFullscreen(false);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  const setCanvasRef = (pageNumber: number, node: HTMLCanvasElement | null) => {
+    if (node) canvasRefs.current.set(pageNumber, node);
+    else canvasRefs.current.delete(pageNumber);
+  };
+
+  const setPageRef = (pageNumber: number, node: HTMLDivElement | null) => {
+    if (node) pageRefs.current.set(pageNumber, node);
+    else pageRefs.current.delete(pageNumber);
+  };
+
+  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    tapStartRef.current = { x: event.clientX, y: event.clientY };
+  };
+
+  const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const start = tapStartRef.current;
+    tapStartRef.current = null;
+    if (!start) return;
+
+    const moved = Math.hypot(event.clientX - start.x, event.clientY - start.y);
+    if (moved <= 8) setShowControls((value) => !value);
+  };
+
+  const defaultRatio = pageRatios[1] || 1.414;
+  const availableWidth = Math.max(180, (containerWidth || 320) - 24);
 
   return (
     <section
-      className="pdf-reader-shell glass"
-      aria-label={`Reader for ${title}`}
+      ref={shellRef}
+      className={`pdf-reader-shell glass${fallbackFullscreen ? ' is-reader-fullscreen-fallback' : ''}`}
+      aria-label={`Continuous reader for ${title}`}
     >
-      {/* Control Bar */}
-      <div className="pdf-reader-toolbar glass">
+      <div className={`pdf-reader-toolbar${showControls ? ' is-visible' : ' is-hidden'}`}>
         <div className="pdf-reader-controls">
-          <button
-            className="reader-tool"
-            type="button"
-            onClick={previous}
-            disabled={page <= 1 || loading}
-          >
-            Previous
-          </button>
-
           <span className="reader-page-count">
-            Page {page} / {pages || '—'}
+            Page {currentPage} / {pages || '—'}
           </span>
-
-          <button
-            className="reader-tool"
-            type="button"
-            onClick={next}
-            disabled={!pages || page >= pages || loading}
-          >
-            Next
-          </button>
         </div>
 
         <div className="pdf-reader-controls">
@@ -399,60 +504,65 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
             className="reader-tool"
             type="button"
             onClick={() =>
-              setScale((s) =>
-                Math.max(0.8, Number((s - 0.1).toFixed(2)))
-              )
+              setScale((value) => Math.max(0.8, Number((value - 0.1).toFixed(2))))
             }
             disabled={loading}
+            aria-label="Zoom out"
           >
             −
           </button>
 
+          <span className="reader-zoom-value">{Math.round(scale * 100)}%</span>
+
           <button
             className="reader-tool"
             type="button"
             onClick={() =>
-              setScale((s) =>
-                Math.min(2.5, Number((s + 0.1).toFixed(2)))
-              )
+              setScale((value) => Math.min(2.5, Number((value + 0.1).toFixed(2))))
             }
             disabled={loading}
+            aria-label="Zoom in"
           >
             +
           </button>
 
-          <a
-            className="reader-tool reader-open-link"
-            href={src}
-            target="_blank"
-            rel="noopener noreferrer"
+          <button
+            className="reader-tool"
+            type="button"
+            onClick={() => void toggleFullscreen()}
+            aria-label={
+              nativeFullscreen || fallbackFullscreen
+                ? 'Exit full screen'
+                : 'Enter full screen'
+            }
           >
-            Open PDF
+            ⛶
+          </button>
+
+          <a
+            
+          >
+           
           </a>
         </div>
       </div>
 
-      {/* Reader Main Area */}
       <div
-        ref={shellRef}
-        className="pdf-reader-page-wrap"
+        ref={scrollRef}
+        className={`pdf-reader-page-wrap${isZoomed ? ' is-zoomed' : ''}`}
+        onPointerDown={handlePointerDown}
+        onPointerUp={handlePointerUp}
+        style={{ touchAction: 'pan-x pan-y' }}
       >
-        {loading && (
-          <div className="reader-state">
-            Opening your book…
-          </div>
-        )}
+        {loading && <div className="reader-state">Opening your book…</div>}
 
         {!loading && rendering && (
-          <div className="reader-rendering">
-            Rendering page {page}…
-          </div>
+          <div className="reader-rendering">Preparing pages…</div>
         )}
 
         {error ? (
           <div className="reader-state reader-error">
             <strong>{error}</strong>
-
             <a
               className="btn btn-dark"
               href={src}
@@ -463,16 +573,34 @@ export function PdfReader({ src, title }: { src: string; title: string }) {
             </a>
           </div>
         ) : (
-          <canvas
-            ref={canvasRef}
-            className="pdf-reader-canvas"
-            style={{
-              display: loading ? 'none' : 'block',
-              maxWidth: 'none',
-              height: 'auto',
-            }}
-            aria-label={`Page ${page} of ${title}`}
-          />
+          <div className="pdf-continuous-document">
+            {Array.from({ length: pages }, (_, index) => {
+              const pageNumber = index + 1;
+              const ratio = pageRatios[pageNumber] || defaultRatio;
+              const estimatedWidth = availableWidth * scale;
+              const estimatedHeight = estimatedWidth * ratio;
+
+              return (
+                <div
+                  key={pageNumber}
+                  ref={(node) => setPageRef(pageNumber, node)}
+                  className="pdf-continuous-page"
+                  data-page={pageNumber}
+                  style={{
+                    width: `${estimatedWidth}px`,
+                    minHeight: `${estimatedHeight}px`,
+                  }}
+                  aria-label={`Page ${pageNumber} of ${title}`}
+                >
+                  <canvas
+                    ref={(node) => setCanvasRef(pageNumber, node)}
+                    className="pdf-continuous-canvas"
+                    aria-hidden="true"
+                  />
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
     </section>
