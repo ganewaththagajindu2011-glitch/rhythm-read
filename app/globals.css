@@ -1359,3 +1359,44 @@ input:focus,textarea:focus,select:focus{outline:none;box-shadow:0 0 0 4px rgba(9
     background:rgba(255,255,255,.05) !important;
     border-radius:12px;
   }
+  /* =========================================================
+   READER OPENING BOOK — SMALL LOADER
+   ========================================================= */
+
+.reader-state{
+  min-height:180px !important;
+  padding:20px !important;
+  gap:8px !important;
+  font-size:12px !important;
+}
+
+.reader-state svg{
+  width:30px !important;
+  height:30px !important;
+  max-width:30px !important;
+  max-height:30px !important;
+}
+
+.reader-state strong{
+  max-width:320px !important;
+  font-size:13px !important;
+  line-height:1.4 !important;
+  font-weight:700 !important;
+}
+
+@media(max-width:560px){
+  .reader-state{
+    min-height:140px !important;
+    padding:16px !important;
+    gap:7px !important;
+  }
+
+  .reader-state svg{
+    width:26px !important;
+    height:26px !important;
+  }
+
+  .reader-state strong{
+    font-size:12px !important;
+  }
+}
